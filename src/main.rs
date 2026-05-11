@@ -8,8 +8,8 @@ use anyhow::{Context, Result, anyhow};
 use goblin::elf::Elf;
 
 mod superset;
-use superset::Superset;
 
+use superset::Superset;
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
