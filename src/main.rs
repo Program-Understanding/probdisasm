@@ -2,22 +2,29 @@
 
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::process;
-
+use std::collections::HashMap;
 use anyhow::{Context, Result, anyhow};
 use goblin::elf::Elf;
 
 mod superset;
+mod analysis;
+mod hints;
 
 use superset::Superset;
+use analysis::Analysis;
+
+use hints::extract_all_hints;
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
-    if args.len() != 2 {
-        eprintln!("usage: {} <binary>", args[0]);
+    if args.len() < 2 || args.len() > 3 {
+        eprintln!("usage: {} <binary> [posteriors.csv]", args[0]);
         process::exit(1);
     }
 
     let path = &args[1];
+    let out_csv = args.get(2);
     let buffer = fs::read(path).with_context(|| format!("failed to read {}", path))?;
     let elf = Elf::parse(&buffer).with_context(|| format!("failed to parse ELF: {}", path))?;
 
@@ -46,25 +53,41 @@ fn main() -> Result<()> {
     sup.disassemble(base, bytes)
         .map_err(|e| anyhow!("disassembly failed: {}", e))?;
 
-    let valid = sup.valid_count();
-    let invalid = sup.invalid_count();
-    let total = valid + invalid;
-    let pct = if total > 0 {
-        100.0 * valid as f64 / total as f64
-    } else {
-        0.0
-    };
 
-    println!("valid:   {} / {} ({:.1}%)", valid, total, pct);
-    println!("invalid: {}", invalid);
+    println!("\nextracting hints...");
+    let hint_priors = extract_all_hints(&sup);
+    println!("hints: {} extracted", hint_priors.len());
 
-    // Print first few valid instructions as a sanity check
-    println!("\nfirst 5 valid instructions:");
-    for insn in sup.iter_valid().take(5) {
-        println!(
-            "  0x{:08x}  {:6} {}  ({} bytes)",
-            insn.address, insn.mnemonic, insn.op_str, insn.size
-        );
+    // Breakdown by label
+    let mut by_label: HashMap<hints::HintLabel, usize> = HashMap::new();
+    for key in hint_priors.keys() {
+        *by_label.entry(key.label).or_insert(0) += 1;
+    }
+    for (label, count) in &by_label {
+        println!("  {:?}: {}", label, count);
+    }
+
+    println!("\nrunning algorithm 1...");
+    let mut analysis = Analysis::new(&sup);
+    analysis.run(&hint_priors);
+
+    let mut posteriors: Vec<(u64, f64)> = analysis.posteriors().iter().map(|(&a, &p)| (a, p)).collect();
+    posteriors.sort_by_key(|(a, _)| *a);
+    println!("posteriors computed: {}", posteriors.len());
+
+    for threshold in [0.99, 0.9, 0.5, 0.1, 0.01] {
+        let n = posteriors.iter().filter(|(_, p)| *p >= threshold).count();
+        println!("  P >= {:.2}: {}", threshold, n);
+    }
+
+    if let Some(out_path) = out_csv {
+        let mut f = fs::File::create(out_path)
+            .with_context(|| format!("failed to create {}", out_path))?;
+        writeln!(f, "address,posterior")?;
+        for (addr, p) in &posteriors {
+            writeln!(f, "{},{}", addr, p)?;
+        }
+        println!("wrote {} rows to {}", posteriors.len(), out_path);
     }
 
     Ok(())
