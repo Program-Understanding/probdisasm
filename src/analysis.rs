@@ -55,8 +55,7 @@ impl<'a> Analysis<'a> {
         self.normalize();
     }
 
-    /// Precompute reverse CFG edges so backward propagation is O(N) per pass
-    /// instead of O(N^2). Built once per `run()`.
+    /// Precompute reverse CFG edges so computation is quicker.
     fn build_predecessor_map(&self) -> HashMap<u64, Vec<u64>> {
         let mut map: HashMap<u64, Vec<u64>> = HashMap::new();
         for offset in 0..self.superset.instructions.len() {
@@ -116,11 +115,8 @@ impl<'a> Analysis<'a> {
             }
 
             // Lines 16-21: propagate RH[i] to control-flow successors.
-            let rh_i: HashSet<HintKey> = self
-                .reaching_hints
-                .get(&addr)
-                .cloned()
-                .unwrap_or_default();
+            let rh_i: HashSet<HintKey> =
+                self.reaching_hints.get(&addr).cloned().unwrap_or_default();
 
             if rh_i.is_empty() {
                 continue;
@@ -199,10 +195,7 @@ impl<'a> Analysis<'a> {
         changed
     }
 
-    fn propagate_invalidity_backward(
-        &mut self,
-        predecessors: &HashMap<u64, Vec<u64>>,
-    ) -> bool {
+    fn propagate_invalidity_backward(&mut self, predecessors: &HashMap<u64, Vec<u64>>) -> bool {
         let mut changed = false;
         let empty: Vec<u64> = Vec::new();
 
@@ -213,7 +206,7 @@ impl<'a> Analysis<'a> {
             let d_i = match self.data_byte[offset] {
                 DataProb::Estimated(lp) => lp,
                 DataProb::DefinitelyData => 0.0, // log(1.0)
-                DataProb::Unknown => continue,    // can't propagate from ⊥
+                DataProb::Unknown => continue,   // can't propagate from ⊥
             };
 
             // For each predecessor p of i (line 26).
@@ -271,7 +264,7 @@ impl<'a> Analysis<'a> {
             None => return Vec::new(),
         };
         let i_end = addr + i.size as u64;
-        let max_size = 15u64; // x86 max instruction length
+        let max_size = 15; // x86 max instruction length
 
         let mut out = Vec::new();
         let scan_start = addr.saturating_sub(max_size - 1);

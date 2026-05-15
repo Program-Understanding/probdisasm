@@ -37,22 +37,18 @@ pub enum HintLabel {
 }
 
 impl HintLabel {
-    pub fn prior(self) -> f64 {
+    pub const fn prior(self) -> f64 {
         match self {
-            HintLabel::CtrlConvRel | HintLabel::CtrlCrossRel => 1.0 / 255.0,
-            HintLabel::CtrlConvNear | HintLabel::CtrlCrossNear => 1.0 / 65535.0,
-            HintLabel::CtrlConvLong | HintLabel::CtrlCrossLong => {
-                1.0 / ((1u64 << 32) as f64 - 1.0)
-            }
-            HintLabel::CtrlWeak => 1.0 / 3.5,
-            HintLabel::RegDefUse => 1.0 / 16.0,
+            Self::CtrlConvRel | Self::CtrlCrossRel => 1.0 / u8::MAX as f64,
+            Self::CtrlConvNear | Self::CtrlCrossNear => 1.0 / u16::MAX as f64,
+            Self::CtrlConvLong | Self::CtrlCrossLong => 1.0 / u32::MAX as f64,
+            Self::CtrlWeak => 1.0 / 3.5,
+            Self::RegDefUse => 1.0 / 16.0,
         }
     }
 }
 
-/// Run all enabled hint extractors over the superset.
-///
-/// Returns a map from each hint to its prior probability.
+// Runs all the enabled hint extractors over the superset.
 pub fn extract_all_hints(superset: &Superset) -> HashMap<HintKey, f64> {
     let mut hints = HashMap::new();
     extract_control_flow_convergence(superset, &mut hints);
@@ -62,13 +58,6 @@ pub fn extract_all_hints(superset: &Superset) -> HashMap<HintKey, f64> {
     hints
 }
 
-fn is_branch(insn: &Instruction) -> bool {
-    use capstone::InsnGroupType;
-    insn.groups.iter().any(|&g| {
-        let g = g as u32;
-        g == InsnGroupType::CS_GRP_JUMP || g == InsnGroupType::CS_GRP_CALL
-    })
-}
 
 /// Hint I: Control Flow Convergence (§III-B).
 ///
@@ -82,21 +71,17 @@ fn extract_control_flow_convergence(
     // Group branches by their target address.
     let mut targets: HashMap<u64, Vec<&Instruction>> = HashMap::new();
     for insn in superset.iter_valid() {
-        let target = match insn.branch_target {
-            Some(t) => t,
-            None => continue, // indirect branches: no static target
-        };
-        if !is_branch(insn) {
+        if !insn.is_branch() {
             continue;
         }
+        let Some(target) = insn.branch_target else {
+            continue;
+        };
         targets.entry(target).or_default().push(insn);
     }
 
     // For any target with two or more converging branches, emit hints.
-    for branches in targets.values() {
-        if branches.len() < 2 {
-            continue;
-        }
+    for branches in targets.values().filter(|b| b.len() < 2) {
         for branch in branches {
             let label = displacement_label_for_convergence(branch);
             let key = HintKey {
@@ -126,18 +111,12 @@ fn displacement_label_for_convergence(insn: &Instruction) -> HintLabel {
 /// Weak control-flow hint: a direct branch whose target decodes to a valid
 /// instruction that doesn't overlap the source instruction's bytes.
 fn extract_weak_control_flow(superset: &Superset, hints: &mut HashMap<HintKey, f64>) {
-    for insn in superset.iter_valid() {
-        let target = match insn.branch_target {
-            Some(t) => t,
-            None => continue,
-        };
-        if !is_branch(insn) {
+    for insn in superset.iter_valid().filter(|i| i.is_branch()) {
+        let Some(target) = insn.branch_target else {
             continue;
-        }
-
-        let target_insn = match superset.at(target) {
-            Some(t) => t,
-            None => continue,
+        };
+        let Some(target_insn) = superset.at(target) else {
+            continue;
         };
 
         let source_end = insn.address + insn.size as u64;
@@ -147,13 +126,7 @@ fn extract_weak_control_flow(superset: &Superset, hints: &mut HashMap<HintKey, f
             continue;
         }
 
-        hints.insert(
-            HintKey {
-                source_addr: insn.address,
-                label: HintLabel::CtrlWeak,
-            },
-            HintLabel::CtrlWeak.prior(),
-        );
+        emit_hint(hints, insn.address, HintLabel::CtrlWeak);
     }
 }
 
@@ -161,40 +134,31 @@ fn extract_weak_control_flow(superset: &Superset, hints: &mut HashMap<HintKey, f
 /// immediately following some other branch B's source. Emits a hint at both.
 fn extract_control_flow_crossing(superset: &Superset, hints: &mut HashMap<HintKey, f64>) {
     // Index: "address right after a branch source" → that branch.
-    let mut post_branch: HashMap<u64, &Instruction> = HashMap::new();
-    for insn in superset.iter_valid() {
-        if !is_branch(insn) {
-            continue;
-        }
-        let next = insn.address + insn.size as u64;
-        post_branch.insert(next, insn);
-    }
+    let post_branch: HashMap<u64, &Instruction> = superset
+        .iter_valid()
+        .filter(|insn| insn.is_branch())
+        .map(|insn| (insn.address + insn.size as u64, insn))
+        .collect();
 
-    for insn in superset.iter_valid() {
-        let target = match insn.branch_target {
-            Some(t) => t,
-            None => continue,
+    for insn in superset.iter_valid().filter(|i| i.is_branch()) {
+        let Some(target) = insn.branch_target else {
+            continue;
         };
-        if !is_branch(insn) {
+        let Some(&other) = post_branch.get(&target) else {
+            continue;
+        };
+        if other.address == insn.address {
+            // A branch landing immediately past itself is degenerate.
             continue;
         }
 
-        if let Some(other) = post_branch.get(&target) {
-            if other.address == insn.address {
-                continue; // a branch landing immediately past itself is degenerate
-            }
-            let label_a = displacement_label_for_crossing(insn);
-            let label_b = displacement_label_for_crossing(other);
-            hints.insert(
-                HintKey { source_addr: insn.address, label: label_a },
-                label_a.prior(),
-            );
-            hints.insert(
-                HintKey { source_addr: other.address, label: label_b },
-                label_b.prior(),
-            );
-        }
+        emit_hint(hints, insn.address, displacement_label_for_crossing(insn));
+        emit_hint(hints, other.address, displacement_label_for_crossing(other));
     }
+}
+
+fn emit_hint(hints: &mut HashMap<HintKey, f64>, source_addr: u64, label: HintLabel) {
+    hints.insert(HintKey { source_addr, label }, label.prior());
 }
 
 fn displacement_label_for_crossing(insn: &Instruction) -> HintLabel {
@@ -213,9 +177,6 @@ fn extract_register_def_use(superset: &Superset, hints: &mut HashMap<HintKey, f6
     const MAX_WALK_DEPTH: usize = 50;
 
     for def in superset.iter_valid() {
-        if def.regs_write.is_empty() {
-            continue;
-        }
         for &reg in &def.regs_write {
             walk_forward_for_use(superset, def.address, reg, MAX_WALK_DEPTH, hints);
         }
@@ -240,23 +201,17 @@ fn walk_forward_for_use(
         if remaining == 0 || !visited.insert(addr) {
             continue;
         }
-        let insn = match superset.at(addr) {
-            Some(i) => i,
-            None => continue,
+        let Some(insn) = superset.at(addr) else {
+            continue;
         };
 
         // First check use: if this instruction reads `reg`, fire the hint at
         // both def and use. We then stop on this path (paper's formulation
         // pairs each def with its first use along a path).
         if insn.regs_read.contains(&reg) {
-            hints.insert(
-                HintKey { source_addr: def_addr, label: HintLabel::RegDefUse },
-                HintLabel::RegDefUse.prior(),
-            );
-            hints.insert(
-                HintKey { source_addr: addr, label: HintLabel::RegDefUse },
-                HintLabel::RegDefUse.prior(),
-            );
+            let label = HintLabel::RegDefUse;
+            emit_hint(hints, def_addr, label);
+            emit_hint(hints, addr, label);
             continue;
         }
 
@@ -265,8 +220,10 @@ fn walk_forward_for_use(
             continue;
         }
 
-        for s in superset.successors_of(addr) {
-            stack.push((s, remaining - 1));
-        }
+
+        stack.extend(superset
+            .successors_of(addr)
+            .into_iter()
+            .map(|s| (s, remaining - 1)));
     }
 }
