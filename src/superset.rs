@@ -10,8 +10,6 @@ pub struct Instruction {
     pub address: u64, // instruction offset
     pub size: u8,     // size of the instruction
     pub mnemonic: String,
-    pub op_str: String,
-    pub bytes: Vec<u8>,
     pub regs_read: Vec<u16>,
     pub regs_write: Vec<u16>,
     pub groups: Vec<u8>,
@@ -81,8 +79,8 @@ impl Superset {
             address: insn.address(),
             size: insn.bytes().len() as u8,
             mnemonic: insn.mnemonic().unwrap_or("").to_string(),
-            op_str: insn.op_str().unwrap_or("").to_string(),
-            bytes: insn.bytes().to_vec(),
+            // op_str: insn.op_str().unwrap_or("").to_string(),
+            // bytes: insn.bytes().to_vec(),
             regs_read: Vec::new(),
             regs_write: Vec::new(),
             groups: Vec::new(),
@@ -102,14 +100,6 @@ impl Superset {
     pub fn at(&self, addr: u64) -> Option<&Instruction> {
         let offset = addr.checked_sub(self.base_addr)? as usize;
         self.instructions.get(offset)?.as_ref()
-    }
-
-    pub fn valid_count(&self) -> usize {
-        self.instructions.iter().filter(|i| i.is_some()).count()
-    }
-
-    pub fn invalid_count(&self) -> usize {
-        self.instructions.iter().filter(|i| i.is_none()).count()
     }
 
     pub fn iter_valid(&self) -> impl Iterator<Item = &Instruction> {

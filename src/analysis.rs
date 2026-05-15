@@ -23,12 +23,10 @@ impl<'a> Analysis<'a> {
         let data_byte = superset
             .instructions
             .iter()
-            .map(|insn| {
-                if insn.is_none() {
-                    DataProb::DefinitelyData
-                } else {
-                    DataProb::Unknown
-                }
+            // This pattern is so sick.
+            .map(|insn| match insn {
+                Some(_) => DataProb::Unknown,
+                None => DataProb::DefinitelyData,
             })
             .collect();
 
@@ -45,10 +43,10 @@ impl<'a> Analysis<'a> {
         const MAX_ITER: usize = 100;
         let predecessors = self.build_predecessor_map();
         for _ in 0..MAX_ITER {
-            let f = self.propagate_hints_forward(hint_priors);
-            let o = self.propagate_to_occlusion_space();
-            let b = self.propagate_invalidity_backward(&predecessors);
-            if !f && !o && !b {
+            let forward = self.propagate_hints_forward(hint_priors);
+            let occlusion = self.propagate_to_occlusion_space();
+            let backward = self.propagate_invalidity_backward(&predecessors);
+            if !forward && !occlusion && !backward {
                 break;
             }
         }
@@ -80,73 +78,55 @@ impl<'a> Analysis<'a> {
     // 20: if n < i then
     // 21: fixed point ←f alse
     fn propagate_hints_forward(&mut self, hint_priors: &HashMap<HintKey, f64>) -> bool {
+        // Precompute source_addr → hints fired there, so we don't scan all
+        // hint_priors keys for every address.
+        let hints_by_source = group_hints_by_source(hint_priors);
+
         let mut changed = false;
-
-        // Precompute: source address → hints fired at that address.
-        // Avoids scanning all hint_priors keys per address.
-        let mut hints_by_source: HashMap<u64, Vec<HintKey>> = HashMap::new();
-        for &k in hint_priors.keys() {
-            hints_by_source.entry(k.source_addr).or_default().push(k);
-        }
-
         for offset in 0..self.superset.instructions.len() {
             // Lines 11-12: skip definitely-data.
             if self.data_byte[offset] == DataProb::DefinitelyData {
                 continue;
             }
-
             let addr = self.superset.base_addr + offset as u64;
 
-            // Lines 13-15: self-source case — if this address is itself a hint
-            // source, add its hints to RH[i] and recompute D[i].
-            if let Some(own_hints) = hints_by_source.get(&addr) {
-                let rh = self.reaching_hints.entry(addr).or_default();
-                let mut grew = false;
-                for &h in own_hints {
-                    if rh.insert(h) {
-                        grew = true;
-                    }
-                }
-                if grew {
-                    let log_d = log_product(rh, hint_priors);
-                    self.data_byte[offset] = DataProb::Estimated(log_d);
-                    changed = true;
-                }
+            // Lines 13-15: if this address itself is a hint source, merge those
+            // hints into RH[addr] and recompute D[addr].
+            if let Some(hints_fired_here) = hints_by_source.get(&addr)
+                && self.merge_reaching_hints(addr, offset, hints_fired_here.iter().copied(), hint_priors)
+            {
+                changed = true;
             }
 
-            // Lines 16-21: propagate RH[i] to control-flow successors.
-            let rh_i: HashSet<HintKey> =
-                self.reaching_hints.get(&addr).cloned().unwrap_or_default();
-
-            if rh_i.is_empty() {
+            // Lines 16-21: propagate RH[addr] to control-flow successors.
+            let reaching_here: HashSet<HintKey> = self
+                .reaching_hints
+                .get(&addr)
+                .cloned()
+                .unwrap_or_default();
+            if reaching_here.is_empty() {
                 continue;
             }
-
-            for n in self.successors_of(addr) {
-                let n_offset = match n.checked_sub(self.superset.base_addr) {
-                    Some(o) => o as usize,
-                    None => continue,
+            for succ_addr in self.successors_of(addr) {
+                let Some(succ_offset) = self.offset_of(succ_addr) else {
+                    continue;
                 };
-                if n_offset >= self.data_byte.len() {
+                if self.data_byte[succ_offset] == DataProb::DefinitelyData {
                     continue;
                 }
-                if self.data_byte[n_offset] == DataProb::DefinitelyData {
-                    continue;
-                }
-
-                let rh_n = self.reaching_hints.entry(n).or_default();
-                let before = rh_n.len();
-                rh_n.extend(rh_i.iter().copied());
-                if rh_n.len() > before {
-                    let log_d = log_product(rh_n, hint_priors);
-                    self.data_byte[n_offset] = DataProb::Estimated(log_d);
+                if self.merge_reaching_hints(
+                    succ_addr,
+                    succ_offset,
+                    reaching_here.iter().copied(),
+                    hint_priors,
+                ) {
                     changed = true;
                 }
             }
         }
-
         changed
     }
+
 
     fn propagate_to_occlusion_space(&mut self) -> bool {
         let mut changed = false;
@@ -162,36 +142,32 @@ impl<'a> Analysis<'a> {
             // Find min log(D[j]) over occluding peers j with known D values.
             // Algorithm 1 line 24: D[i] = 1 - min_j(D[j]).
             // In log-space: log(1 - exp(min_log_d_j)).
-            let mut min_log_d: Option<f64> = None;
-            for j in self.occluding_addrs(addr) {
-                let j_offset = match j.checked_sub(self.superset.base_addr) {
-                    Some(o) => o as usize,
-                    None => continue,
+            let mut min_log_prob: Option<f64> = None;
+            for peer_addr in self.occluding_addrs(addr) {
+                let Some(peer_offset) = self.offset_of(peer_addr) else {
+                    continue;
                 };
-                let log_dj = match self.data_byte.get(j_offset) {
-                    Some(DataProb::Estimated(lp)) => *lp,
-                    Some(DataProb::DefinitelyData) => 0.0,
-                    _ => continue, // Unknown or out of range
+                let peer_log_prob = match self.data_byte[peer_offset] {
+                    DataProb::Estimated(log_prob) => log_prob,
+                    DataProb::DefinitelyData => 0.0,
+                    DataProb::Unknown => continue,
                 };
-                min_log_d = Some(match min_log_d {
-                    None => log_dj,
-                    Some(cur) => cur.min(log_dj),
+                min_log_prob = Some(match min_log_prob {
+                        None => peer_log_prob,
+                        Some(running_min) => running_min.min(peer_log_prob),
                 });
             }
-
-            if let Some(m) = min_log_d {
-                // D[i] = 1 - exp(m). Convert back to log space.
+            if let Some(min_log_prob) = min_log_prob {
+                // D[i] = 1 - exp(min_log_prob). Convert back to log space.
                 // log1p(-exp(m)) = log(1 - exp(m)), numerically stable for small exp(m).
-                let dj = m.exp();
+                let peer_prob = min_log_prob.exp();
                 // Guard against numerical edge cases.
-                let one_minus_dj = (1.0 - dj).max(f64::MIN_POSITIVE);
-                let new_log_d = one_minus_dj.ln();
-
-                self.data_byte[offset] = DataProb::Estimated(new_log_d);
+                let one_minus_peer = (1.0 - peer_prob).max(f64::MIN_POSITIVE);
+                let new_log_prob = one_minus_peer.ln();
+                self.data_byte[offset] = DataProb::Estimated(new_log_prob);
                 changed = true;
             }
         }
-
         changed
     }
 
@@ -233,8 +209,6 @@ impl<'a> Analysis<'a> {
                         DataProb::Estimated(d_i)
                     };
                     changed = true;
-                    // Line 29: implicit — by setting `changed`, we trigger another
-                    // fixpoint iteration regardless of p's address vs i's.
                 }
             }
         }
@@ -242,18 +216,78 @@ impl<'a> Analysis<'a> {
         changed
     }
 
-    // ---- Helpers ----
+    fn normalize(&mut self) {
+        // Algorithm 1 lines 31-38: compute P[i] for every address.
+        //
+        //   if D[i] = 1.0:        P[i] = 0
+        //   else:                 s = 1/D[i]
+        //                         for j occluded with i: s += 1/D[j]
+        //                         P[i] = (1/D[i]) / s
+        //
+        // We work in log space throughout. Let li = log(D[i]). Then 1/D[i] = exp(-li).
+        // To avoid underflow when computing sum of exp(-li) + exp(-lj) + ..., we use
+        // the log-sum-exp trick: shift by the max so the largest term is exp(0) = 1.
 
-    /// Compute log(D[i]) = sum of log(H[h]) over h in RH[i].
-    fn log_product(rh: &HashSet<HintKey>, hint_priors: &HashMap<HintKey, f64>) -> f64 {
-        rh.iter()
-            .filter_map(|h| hint_priors.get(h))
-            .map(|p| p.ln())
-            .sum()
+        for offset in 0..self.superset.instructions.len() {
+            let addr = self.superset.base_addr + offset as u64;
+
+            // Lines 32-34: if D[i] = 1.0 (definitely data), P[i] = 0.
+            let log_data_prob = match self.data_byte[offset] {
+                DataProb::DefinitelyData => {
+                    self.posterior.insert(addr, 0.0);
+                    continue;
+                }
+                DataProb::Estimated(log_prob) => log_prob,
+                DataProb::Unknown => continue
+            };
+
+            // Gather -log(D[k]) for i and each occluding peer with a known D.
+            // (1/D = exp(-log D), so we accumulate the negated log-densities.)
+            let mut neg_log_data_probs: Vec<f64> = Vec::new();
+            neg_log_data_probs.push(-log_data_prob);
+
+            for peer_addr in self.occluding_addrs(addr) {
+                let Some(peer_offset) = self.offset_of(peer_addr) else {
+                    continue;
+                };
+                match self.data_byte[peer_offset] {
+                    DataProb::Estimated(log_prob) => neg_log_data_probs.push(-log_prob),
+                    DataProb::DefinitelyData => neg_log_data_probs.push(0.0), // -log(1.0)
+                    DataProb::Unknown => {} // contributes nothing
+                }
+            }
+
+            let max_term = neg_log_data_probs
+                .iter()
+                .copied()
+                .fold(f64::NEG_INFINITY, f64::max);
+
+            if !max_term.is_finite() {
+                // All terms underflowed to -inf; can't compute a meaningful posterior.
+                continue;
+            }
+
+            let shifted_sum: f64 = neg_log_data_probs
+                .iter()
+                .map(|x| (x - max_term).exp())
+                .sum();
+
+            let log_total = max_term + shifted_sum.ln();
+
+            // P[i] = (1/D[i]) / s = exp(-log_data_prob - log_total)
+            let posterior = (-log_data_prob - log_total).exp().clamp(0.0, 1.0);
+            self.posterior.insert(addr, posterior);
+        }
     }
 
+    // ---- Helpers ----
     fn successors_of(&self, addr: u64) -> Vec<u64> {
         self.superset.successors_of(addr)
+    }
+
+    fn offset_of(&self, addr: u64) -> Option<usize> {
+        let offset = addr.checked_sub(self.superset.base_addr)? as usize;
+        (offset < self.data_byte.len()).then_some(offset)
     }
 
     /// Addresses whose decoded instruction overlaps `addr`'s bytes.
@@ -287,77 +321,26 @@ impl<'a> Analysis<'a> {
         out
     }
 
-    fn normalize(&mut self) {
-        // Algorithm 1 lines 31-38: compute P[i] for every address.
-        //
-        //   if D[i] = 1.0:        P[i] = 0
-        //   else:                 s = 1/D[i]
-        //                         for j occluded with i: s += 1/D[j]
-        //                         P[i] = (1/D[i]) / s
-        //
-        // We work in log space throughout. Let li = log(D[i]). Then 1/D[i] = exp(-li).
-        // To avoid underflow when computing sum of exp(-li) + exp(-lj) + ..., we use
-        // the log-sum-exp trick: shift by the max so the largest term is exp(0) = 1.
-
-        for offset in 0..self.superset.instructions.len() {
-            let addr = self.superset.base_addr + offset as u64;
-
-            // Lines 32-34: if D[i] = 1.0 (definitely data), P[i] = 0.
-            let log_d_i = match self.data_byte[offset] {
-                DataProb::DefinitelyData => {
-                    self.posterior.insert(addr, 0.0);
-                    continue;
-                }
-                DataProb::Estimated(lp) => lp,
-                DataProb::Unknown => {
-                    // No estimate at all: the algorithm doesn't define P[i] here.
-                    // We skip rather than emit a posterior.
-                    continue;
-                }
-            };
-
-            // Collect log(D[j]) for i and its occlusion peers, gathering -log(D)
-            // values (since the formula uses 1/D, and 1/D = exp(-log(D))).
-            let mut neg_log_ds: Vec<f64> = Vec::with_capacity(8);
-            neg_log_ds.push(-log_d_i);
-
-            for j in self.occluding_addrs(addr) {
-                let j_offset = match j.checked_sub(self.superset.base_addr) {
-                    Some(o) => o as usize,
-                    None => continue,
-                };
-                let log_d_j = match self.data_byte.get(j_offset) {
-                    Some(DataProb::Estimated(lp)) => *lp,
-                    Some(DataProb::DefinitelyData) => 0.0,
-                    _ => continue, // Unknown peers don't contribute
-                };
-                neg_log_ds.push(-log_d_j);
-            }
-
-            // log-sum-exp: log(sum(exp(x_k))) = max + log(sum(exp(x_k - max)))
-            let max = neg_log_ds.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            let log_s = if max.is_finite() {
-                let shifted_sum: f64 = neg_log_ds.iter().map(|x| (x - max).exp()).sum();
-                max + shifted_sum.ln()
-            } else {
-                // All terms underflowed to -inf; can't compute a meaningful posterior.
-                continue;
-            };
-
-            // P[i] = (1/D[i]) / s = exp(-log_d_i) / exp(log_s) = exp(-log_d_i - log_s)
-            let log_p = -log_d_i - log_s;
-            let p = log_p.exp();
-
-            // Numerical guard: posterior must be in [0, 1]. Clamp tiny negatives or
-            // values that exceed 1 due to floating-point drift.
-            let p = p.max(0.0).min(1.0);
-
-            self.posterior.insert(addr, p);
-        }
-    }
-
     pub fn posteriors(&self) -> &HashMap<u64, f64> {
         &self.posterior
+    }
+
+    fn merge_reaching_hints(
+        &mut self,
+        addr: u64,
+        offset: usize,
+        new_hints: impl IntoIterator<Item = HintKey>,
+        hint_priors: &HashMap<HintKey, f64>,
+    ) -> bool {
+        let reaching = self.reaching_hints.entry(addr).or_default();
+        let before = reaching.len();
+        reaching.extend(new_hints);
+        if reaching.len() == before {
+            return false;
+        }
+        let log_d = log_product(reaching, hint_priors);
+        self.data_byte[offset] = DataProb::Estimated(log_d);
+        true
     }
 }
 
@@ -367,4 +350,12 @@ fn log_product(rh: &HashSet<HintKey>, hint_priors: &HashMap<HintKey, f64>) -> f6
         .filter_map(|h| hint_priors.get(h))
         .map(|p| p.ln())
         .sum()
+}
+
+fn group_hints_by_source(hint_priors: &HashMap<HintKey, f64>) -> HashMap<u64, Vec<HintKey>> {
+    let mut by_source: HashMap<u64, Vec<HintKey>> = HashMap::new();
+    for &k in hint_priors.keys() {
+        by_source.entry(k.source_addr).or_default().push(k);
+    }
+    by_source
 }
