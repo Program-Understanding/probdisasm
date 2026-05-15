@@ -93,17 +93,19 @@ impl<'a> Analysis<'a> {
             // Lines 13-15: if this address itself is a hint source, merge those
             // hints into RH[addr] and recompute D[addr].
             if let Some(hints_fired_here) = hints_by_source.get(&addr)
-                && self.merge_reaching_hints(addr, offset, hints_fired_here.iter().copied(), hint_priors)
+                && self.merge_reaching_hints(
+                    addr,
+                    offset,
+                    hints_fired_here.iter().copied(),
+                    hint_priors,
+                )
             {
                 changed = true;
             }
 
             // Lines 16-21: propagate RH[addr] to control-flow successors.
-            let reaching_here: HashSet<HintKey> = self
-                .reaching_hints
-                .get(&addr)
-                .cloned()
-                .unwrap_or_default();
+            let reaching_here: HashSet<HintKey> =
+                self.reaching_hints.get(&addr).cloned().unwrap_or_default();
             if reaching_here.is_empty() {
                 continue;
             }
@@ -126,7 +128,6 @@ impl<'a> Analysis<'a> {
         }
         changed
     }
-
 
     fn propagate_to_occlusion_space(&mut self) -> bool {
         let mut changed = false;
@@ -153,8 +154,8 @@ impl<'a> Analysis<'a> {
                     DataProb::Unknown => continue,
                 };
                 min_log_prob = Some(match min_log_prob {
-                        None => peer_log_prob,
-                        Some(running_min) => running_min.min(peer_log_prob),
+                    None => peer_log_prob,
+                    Some(running_min) => running_min.min(peer_log_prob),
                 });
             }
             if let Some(min_log_prob) = min_log_prob {
@@ -238,7 +239,7 @@ impl<'a> Analysis<'a> {
                     continue;
                 }
                 DataProb::Estimated(log_prob) => log_prob,
-                DataProb::Unknown => continue
+                DataProb::Unknown => continue,
             };
 
             // Gather -log(D[k]) for i and each occluding peer with a known D.
@@ -253,7 +254,7 @@ impl<'a> Analysis<'a> {
                 match self.data_byte[peer_offset] {
                     DataProb::Estimated(log_prob) => neg_log_data_probs.push(-log_prob),
                     DataProb::DefinitelyData => neg_log_data_probs.push(0.0), // -log(1.0)
-                    DataProb::Unknown => {} // contributes nothing
+                    DataProb::Unknown => {}                                   // contributes nothing
                 }
             }
 
@@ -321,8 +322,10 @@ impl<'a> Analysis<'a> {
         out
     }
 
-    pub fn posteriors(&self) -> &HashMap<u64, f64> {
-        &self.posterior
+    pub fn sorted_posteriors(&self) -> Vec<(u64, f64)> {
+        let mut out: Vec<(u64, f64)> = self.posterior.iter().map(|(&a, &p)| (a, p)).collect();
+        out.sort_by_key(|(addr, _)| *addr);
+        out
     }
 
     fn merge_reaching_hints(

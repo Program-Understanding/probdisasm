@@ -1,94 +1,90 @@
 // src/main.rs
-
-use std::env;
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
-use std::process;
-use std::collections::HashMap;
+
 use anyhow::{Context, Result, anyhow};
-use goblin::elf::Elf;
+use clap::Parser;
 
-mod superset;
 mod analysis;
+mod header;
 mod hints;
+mod superset;
 
-use superset::Superset;
 use analysis::Analysis;
+use hints::{HintKey, HintLabel, extract_all_hints};
+use superset::Superset;
 
-use hints::extract_all_hints;
+/// Probabilistic disassembly via Algorithm 1.
+#[derive(Parser)]
+#[command(version, about)]
+struct Args {
+    /// Path to the ELF binary to analyze.
+    binary: String,
+
+    /// Optional output CSV path for (address, posterior) rows.
+    output_csv: Option<String>,
+}
+
+const POSTERIOR_THRESHOLDS: [f64; 5] = [0.99, 0.9, 0.5, 0.1, 0.01];
+
 fn main() -> Result<()> {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 2 || args.len() > 3 {
-        eprintln!("usage: {} <binary> [posteriors.csv]", args[0]);
-        process::exit(1);
-    }
+    let args = Args::parse();
 
-    let path = &args[1];
-    let out_csv = args.get(2);
-    let buffer = fs::read(path).with_context(|| format!("failed to read {}", path))?;
-    let elf = Elf::parse(&buffer).with_context(|| format!("failed to parse ELF: {}", path))?;
+    let buffer =
+        fs::read(&args.binary).with_context(|| format!("failed to read {}", args.binary))?;
+    let (base, text_bytes) = header::extract_text_section(&buffer, &args.binary)?;
 
-    // Find .text
-    let text_hdr = elf
-        .section_headers
-        .iter()
-        .find(|s| {
-            elf.shdr_strtab
-                .get_at(s.sh_name)
-                .map(|n| n == ".text")
-                .unwrap_or(false)
-        })
-        .ok_or_else(|| anyhow!(".text section not found"))?;
+    println!("file:  {}", args.binary);
+    println!(".text: {} bytes at 0x{:x}", text_bytes.len(), base);
 
-    let base = text_hdr.sh_addr;
-    let range = text_hdr
-        .file_range()
-        .ok_or_else(|| anyhow!(".text has no file range (NOBITS?)"))?;
-    let bytes = &buffer[range];
-
-    println!("file:  {}", path);
-    println!(".text: {} bytes at 0x{:x}", bytes.len(), base);
-
-    let mut sup = Superset::new().map_err(|e| anyhow!("capstone init failed: {}", e))?;
-    sup.disassemble(base, bytes)
-        .map_err(|e| anyhow!("disassembly failed: {}", e))?;
-
+    let superset =
+        Superset::from_bytes(base, text_bytes).map_err(|e| anyhow!("disassembly failed: {}", e))?;
 
     println!("\nextracting hints...");
-    let hint_priors = extract_all_hints(&sup);
+    let hint_priors = extract_all_hints(&superset);
     println!("hints: {} extracted", hint_priors.len());
+    print_hint_breakdown(&hint_priors);
 
-    // Breakdown by label
-    let mut by_label: HashMap<hints::HintLabel, usize> = HashMap::new();
+    println!("\nrunning algorithm 1...");
+    let mut analysis = Analysis::new(&superset);
+    analysis.run(&hint_priors);
+
+    let posteriors = analysis.sorted_posteriors();
+    println!("posteriors computed: {}", posteriors.len());
+    print_posterior_thresholds(&posteriors);
+
+    if let Some(out_path) = &args.output_csv {
+        write_csv(out_path, &posteriors)?;
+        println!("wrote {} rows to {}", posteriors.len(), out_path);
+    }
+    Ok(())
+}
+
+fn print_hint_breakdown(hint_priors: &HashMap<HintKey, f64>) {
+    let mut by_label: HashMap<HintLabel, usize> = HashMap::new();
     for key in hint_priors.keys() {
         *by_label.entry(key.label).or_insert(0) += 1;
     }
-    for (label, count) in &by_label {
+    let mut entries: Vec<(HintLabel, usize)> = by_label.into_iter().collect();
+    entries.sort_by_key(|(label, _)| format!("{:?}", label));
+    for (label, count) in &entries {
         println!("  {:?}: {}", label, count);
     }
+}
 
-    println!("\nrunning algorithm 1...");
-    let mut analysis = Analysis::new(&sup);
-    analysis.run(&hint_priors);
-
-    let mut posteriors: Vec<(u64, f64)> = analysis.posteriors().iter().map(|(&a, &p)| (a, p)).collect();
-    posteriors.sort_by_key(|(a, _)| *a);
-    println!("posteriors computed: {}", posteriors.len());
-
-    for threshold in [0.99, 0.9, 0.5, 0.1, 0.01] {
-        let n = posteriors.iter().filter(|(_, p)| *p >= threshold).count();
-        println!("  P >= {:.2}: {}", threshold, n);
+fn print_posterior_thresholds(posteriors: &[(u64, f64)]) {
+    for threshold in POSTERIOR_THRESHOLDS {
+        let count = posteriors.iter().filter(|(_, p)| *p >= threshold).count();
+        println!("  P >= {:.2}: {}", threshold, count);
     }
+}
 
-    if let Some(out_path) = out_csv {
-        let mut f = fs::File::create(out_path)
-            .with_context(|| format!("failed to create {}", out_path))?;
-        writeln!(f, "address,posterior")?;
-        for (addr, p) in &posteriors {
-            writeln!(f, "{},{}", addr, p)?;
-        }
-        println!("wrote {} rows to {}", posteriors.len(), out_path);
+fn write_csv(path: &str, posteriors: &[(u64, f64)]) -> Result<()> {
+    let mut f = fs::File::create(path).with_context(|| format!("failed to create {}", path))?;
+    writeln!(f, "address,posterior")?;
+    for (addr, p) in posteriors {
+        writeln!(f, "{},{}", addr, p)?;
     }
-
     Ok(())
 }

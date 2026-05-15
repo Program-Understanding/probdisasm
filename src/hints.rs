@@ -58,16 +58,12 @@ pub fn extract_all_hints(superset: &Superset) -> HashMap<HintKey, f64> {
     hints
 }
 
-
 /// Hint I: Control Flow Convergence (§III-B).
 ///
 /// Two valid control transfers (jumps or calls) with the same constant target.
 /// Each contributing source emits a hint with prior 1/255, 1/65535, or
 /// 1/(2^32-1) depending on its displacement width.
-fn extract_control_flow_convergence(
-    superset: &Superset,
-    hints: &mut HashMap<HintKey, f64>,
-) {
+fn extract_control_flow_convergence(superset: &Superset, hints: &mut HashMap<HintKey, f64>) {
     // Group branches by their target address.
     let mut targets: HashMap<u64, Vec<&Instruction>> = HashMap::new();
     for insn in superset.iter_valid() {
@@ -220,10 +216,11 @@ fn walk_forward_for_use(
             continue;
         }
 
-
-        stack.extend(superset
-            .successors_of(addr)
-            .into_iter()
-            .map(|s| (s, remaining - 1)));
+        stack.extend(
+            superset
+                .successors_of(addr)
+                .into_iter()
+                .map(|s| (s, remaining - 1)),
+        );
     }
 }

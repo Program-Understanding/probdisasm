@@ -31,7 +31,7 @@ impl Instruction {
 
     pub fn has_group(&self, group: u32) -> bool {
         self.groups.iter().any(|&g| g as u32 == group)
-        }
+    }
 
     pub fn is_branch(&self) -> bool {
         self.is_jump() || self.is_call()
@@ -59,6 +59,12 @@ impl Superset {
         })
     }
 
+    pub fn from_bytes(base_addr: u64, bytes: &[u8]) -> Result<Self, capstone::Error> {
+        let mut sup = Self::new()?;
+        sup.disassemble(base_addr, bytes)?;
+        Ok(sup)
+    }
+
     pub fn disassemble(&mut self, base_addr: u64, data: &[u8]) -> Result<(), capstone::Error> {
         self.base_addr = base_addr;
         self.bytes = data.to_vec();
@@ -75,7 +81,7 @@ impl Superset {
     }
 
     fn convert_insn(&self, insn: &capstone::Insn) -> Instruction {
-        let mut result_insn =Instruction {
+        let mut result_insn = Instruction {
             address: insn.address(),
             size: insn.bytes().len() as u8,
             mnemonic: insn.mnemonic().unwrap_or("").to_string(),
@@ -88,7 +94,7 @@ impl Superset {
         };
 
         let Ok(detail) = self.cs.insn_detail(insn) else {
-                return result_insn;
+            return result_insn;
         };
         result_insn.groups = detail.groups().iter().map(|g| g.0).collect();
         result_insn.regs_read = detail.regs_read().iter().map(|r| r.0).collect();
@@ -145,8 +151,12 @@ fn extract_branch_target(detail: &InsnDetail, groups: &[u8]) -> Option<u64> {
         return None;
     }
 
-    detail.arch_detail().x86()?.operands().find_map(|op| match op.op_type {
-        X86OperandType::Imm(v) => Some(v as u64),
-        _ => None,
-    })
+    detail
+        .arch_detail()
+        .x86()?
+        .operands()
+        .find_map(|op| match op.op_type {
+            X86OperandType::Imm(v) => Some(v as u64),
+            _ => None,
+        })
 }
