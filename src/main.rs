@@ -1,19 +1,13 @@
 // src/main.rs
-use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use clap::Parser;
+use colored::Colorize;
 
-mod analysis;
-mod header;
-mod hints;
-mod superset;
+use probdisasm::{extract_all_hints, extract_text_section, Analysis, Superset};
 
-use analysis::Analysis;
-use hints::{HintKey, HintLabel, extract_all_hints};
-use superset::Superset;
+const POSTERIOR_COL: usize = 64;
 
 /// Probabilistic disassembly via Algorithm 1.
 #[derive(Parser)]
@@ -22,69 +16,70 @@ struct Args {
     /// Path to the ELF binary to analyze.
     binary: String,
 
-    /// Optional output CSV path for (address, posterior) rows.
-    output_csv: Option<String>,
-}
+    /// Highlight rows with posterior at or above this threshold; rows below are dimmed.
+    #[arg(long, default_value_t = 0.0)]
+    min: f64,
 
-const POSTERIOR_THRESHOLDS: [f64; 5] = [0.99, 0.9, 0.5, 0.1, 0.01];
+    /// Hide rows with posterior below `--min` instead of dimming them.
+    #[arg(long)]
+    hide_below: bool,
+
+    /// Disable colored output.
+    #[arg(long)]
+    no_color: bool,
+}
 
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let buffer =
-        fs::read(&args.binary).with_context(|| format!("failed to read {}", args.binary))?;
-    let (base, text_bytes) = header::extract_text_section(&buffer, &args.binary)?;
+    if args.no_color {
+        colored::control::set_override(false);
+    }
 
-    println!("file:  {}", args.binary);
-    println!(".text: {} bytes at 0x{:x}", text_bytes.len(), base);
+    let buffer = fs::read(&args.binary)
+        .with_context(|| format!("failed to read {}", args.binary))?;
+    let (base, code) = extract_text_section(&buffer, &args.binary)?;
 
-    let superset =
-        Superset::from_bytes(base, text_bytes).map_err(|e| anyhow!("disassembly failed: {}", e))?;
-
-    println!("\nextracting hints...");
-    let hint_priors = extract_all_hints(&superset);
-    println!("hints: {} extracted", hint_priors.len());
-    print_hint_breakdown(&hint_priors);
-
-    println!("\nrunning algorithm 1...");
+    let superset = Superset::from_bytes(base, code)
+        .map_err(|e| anyhow!("disassembly failed: {}", e))?;
+    let priors = extract_all_hints(&superset);
     let mut analysis = Analysis::new(&superset);
-    analysis.run(&hint_priors);
+    analysis.run(&priors);
 
-    let posteriors = analysis.sorted_posteriors();
-    println!("posteriors computed: {}", posteriors.len());
-    print_posterior_thresholds(&posteriors);
+    for (addr, posterior) in analysis.sorted_posteriors() {
+        let (instruction, posterior_str) = match superset.at(addr) {
+            Some(i) if i.op_str.is_empty() => (i.mnemonic.clone(), format!("{:.6}", posterior)),
+            Some(i) => (format!("{} {}", i.mnemonic, i.op_str), format!("{:.6}", posterior)),
+            None => (String::new(), "(data)".to_string()),
+        };
 
-    if let Some(out_path) = &args.output_csv {
-        write_csv(out_path, &posteriors)?;
-        println!("wrote {} rows to {}", posteriors.len(), out_path);
+        let prefix = format!("0x{:010x}  ", addr);
+        let pad = POSTERIOR_COL
+            .saturating_sub(prefix.len() + instruction.len())
+            .max(2);
+        let line = format!("{}{}{}{}", prefix, instruction, " ".repeat(pad), posterior_str);
+
+        if posterior < args.min {
+            if args.hide_below {
+                continue;
+            }
+            println!("{}", line.dimmed());
+        } else {
+            println!("{}", colorize(&line, posterior));
+        }
     }
+
     Ok(())
 }
 
-fn print_hint_breakdown(hint_priors: &HashMap<HintKey, f64>) {
-    let mut by_label: HashMap<HintLabel, usize> = HashMap::new();
-    for key in hint_priors.keys() {
-        *by_label.entry(key.label).or_insert(0) += 1;
+fn colorize(line: &str, posterior: f64) -> colored::ColoredString {
+    if posterior >= 0.95 {
+        line.green()
+    } else if posterior >= 0.5 {
+        line.yellow()
+    } else if posterior >= 0.1 {
+        line.truecolor(255, 140, 0)
+    } else {
+        line.red()
     }
-    let mut entries: Vec<(HintLabel, usize)> = by_label.into_iter().collect();
-    entries.sort_by_key(|(label, _)| format!("{:?}", label));
-    for (label, count) in &entries {
-        println!("  {:?}: {}", label, count);
-    }
-}
-
-fn print_posterior_thresholds(posteriors: &[(u64, f64)]) {
-    for threshold in POSTERIOR_THRESHOLDS {
-        let count = posteriors.iter().filter(|(_, p)| *p >= threshold).count();
-        println!("  P >= {:.2}: {}", threshold, count);
-    }
-}
-
-fn write_csv(path: &str, posteriors: &[(u64, f64)]) -> Result<()> {
-    let mut f = fs::File::create(path).with_context(|| format!("failed to create {}", path))?;
-    writeln!(f, "address,posterior")?;
-    for (addr, p) in posteriors {
-        writeln!(f, "{},{}", addr, p)?;
-    }
-    Ok(())
 }
