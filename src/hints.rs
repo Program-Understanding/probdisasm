@@ -1,20 +1,19 @@
-// src/hints.rs
+//! Hint extractors from Miller et al. and hopefully future extensions of the hint system.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::superset::{Instruction, Superset};
 
-/// A single hint: the address that produced it plus a label for the hint type.
-/// One source address can produce multiple distinct hints with different priors,
-/// so the (address, label) pair is what RH[i] sets contain.
+/// A hint that the address that produced it plus a label for the hint type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HintKey {
+    /// The address that produced this hint.
     pub source_addr: u64,
+    /// The type of hint.
     pub label: HintLabel,
 }
 
-/// Hint categories from §III-B of Miller et al., with their derived priors
-/// under uniform-random-bytes.
+/// The type of hint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HintLabel {
     /// Hint I: control-flow convergence, 1-byte displacement. Prior 1/255.
@@ -26,7 +25,9 @@ pub enum HintLabel {
 
     /// Hint II: control-flow crossing, 1-byte displacement.
     CtrlCrossRel,
+    /// Hint II: control-flow crossing, 2-byte displacement.
     CtrlCrossNear,
+    /// Hint II: control-flow crossing, 4-byte displacement.
     CtrlCrossLong,
 
     /// Weak control-flow hint: branch target doesn't occlude with source. Prior ~1/n.
@@ -37,6 +38,7 @@ pub enum HintLabel {
 }
 
 impl HintLabel {
+    /// Returns the prior probability of this hint type.
     pub const fn prior(self) -> f64 {
         match self {
             Self::CtrlConvRel | Self::CtrlCrossRel => 1.0 / u8::MAX as f64,
@@ -48,7 +50,7 @@ impl HintLabel {
     }
 }
 
-// Runs all the enabled hint extractors over the superset.
+/// Runs all the enabled hint extractors over the superset, returning a map of hints to their priors.
 pub fn extract_all_hints(superset: &Superset) -> HashMap<HintKey, f64> {
     let mut hints = HashMap::new();
     extract_control_flow_convergence(superset, &mut hints);
@@ -58,11 +60,7 @@ pub fn extract_all_hints(superset: &Superset) -> HashMap<HintKey, f64> {
     hints
 }
 
-/// Hint I: Control Flow Convergence (§III-B).
-///
-/// Two valid control transfers (jumps or calls) with the same constant target.
-/// Each contributing source emits a hint with prior 1/255, 1/65535, or
-/// 1/(2^32-1) depending on its displacement width.
+/// Extracts control flow convergence hints from the superset.
 fn extract_control_flow_convergence(superset: &Superset, hints: &mut HashMap<HintKey, f64>) {
     // Group branches by their target address.
     let mut targets: HashMap<u64, Vec<&Instruction>> = HashMap::new();
@@ -89,13 +87,8 @@ fn extract_control_flow_convergence(superset: &Superset, hints: &mut HashMap<Hin
     }
 }
 
-/// Pick the convergence-hint label for a branch instruction based on its
-/// displacement encoding width. We use the total instruction size as a proxy:
-/// 2 bytes → 1-byte displacement (short rel), 5+ bytes → 4-byte displacement
-/// (near/long), in-between → 2-byte displacement.
-///
-/// This is a heuristic. A more accurate approach would parse the operand
-/// encoding, but capstone doesn't expose this directly in a portable way.
+
+/// Returns the hint label for a branch instruction based on its displacement encoding width.
 fn displacement_label_for_convergence(insn: &Instruction) -> HintLabel {
     match insn.size {
         2 => HintLabel::CtrlConvRel,
@@ -104,8 +97,7 @@ fn displacement_label_for_convergence(insn: &Instruction) -> HintLabel {
     }
 }
 
-/// Weak control-flow hint: a direct branch whose target decodes to a valid
-/// instruction that doesn't overlap the source instruction's bytes.
+/// Extracts weak control-flow hints from the superset.
 fn extract_weak_control_flow(superset: &Superset, hints: &mut HashMap<HintKey, f64>) {
     for insn in superset.iter_valid().filter(|i| i.is_branch()) {
         let Some(target) = insn.branch_target else {
@@ -126,8 +118,7 @@ fn extract_weak_control_flow(superset: &Superset, hints: &mut HashMap<HintKey, f
     }
 }
 
-/// Hint II: control-flow crossing. Branch A's target lands at the instruction
-/// immediately following some other branch B's source. Emits a hint at both.
+/// Extracts control-flow crossing hints from the superset.
 fn extract_control_flow_crossing(superset: &Superset, hints: &mut HashMap<HintKey, f64>) {
     // Index: "address right after a branch source" → that branch.
     let post_branch: HashMap<u64, &Instruction> = superset
@@ -153,10 +144,12 @@ fn extract_control_flow_crossing(superset: &Superset, hints: &mut HashMap<HintKe
     }
 }
 
+/// Emits a hint for the given source address and label.
 fn emit_hint(hints: &mut HashMap<HintKey, f64>, source_addr: u64, label: HintLabel) {
     hints.insert(HintKey { source_addr, label }, label.prior());
 }
 
+/// Returns the hint label for a branch instruction based on its displacement encoding width.
 fn displacement_label_for_crossing(insn: &Instruction) -> HintLabel {
     match insn.size {
         2 => HintLabel::CtrlCrossRel,
@@ -165,10 +158,7 @@ fn displacement_label_for_crossing(insn: &Instruction) -> HintLabel {
     }
 }
 
-/// Hint III: register define-use. For each instruction that writes register r,
-/// walk forward through the CFG looking for an instruction that reads r before
-/// any other instruction overwrites r. On finding a use, emit a hint at both
-/// the def site and the use site.
+/// Extracts register define-use hints from the superset.
 fn extract_register_def_use(superset: &Superset, hints: &mut HashMap<HintKey, f64>) {
     const MAX_WALK_DEPTH: usize = 50;
 
@@ -179,6 +169,7 @@ fn extract_register_def_use(superset: &Superset, hints: &mut HashMap<HintKey, f6
     }
 }
 
+/// Walks forward through the CFG to find a use of the given register before any other instruction overwrites it.
 fn walk_forward_for_use(
     superset: &Superset,
     def_addr: u64,

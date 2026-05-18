@@ -1,12 +1,29 @@
 [package]
 name = "probdisasm"
 version = "0.1.0"
+authors = ["Dylan Stancil <dylan.stancil@outlook.com>"]
+categories = ["parsing", "command-line-utilities"]
+description = "An implementation of probabilistic disassembly for ELF binaries."
+keywords = ["binary", "elf", "disassembly", "static-analysis"]
 edition = "2024"
+include = ["src", "CHANGELOG.md", "Cargo.toml", "LICENSE", "README.md"]
+license = "MIT"
+repository = "https://codeberg.org/ihce/probdisasm"
+readme = "README.md"
+rust-version = "1.85.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+python = ["dep:pyo3"]
 
 [dependencies]
 anyhow = "1.0.102"
 capstone = "0.14.0"
-clap = { version = "4.6.1", features = ["derive"] }
-colored = "3.1.1"
 goblin = "0.10.5"
-pyo3 = { version = "0.28.3", features = ["extension-module"] }
+pyo3 = { version = "0.28.3", features = ["extension-module"], optional = true }
+
+[package.metadata.docs.rs]
+all-features = false

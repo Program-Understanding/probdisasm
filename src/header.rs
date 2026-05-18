@@ -1,3 +1,4 @@
+//! Interfaces with goblin to extract the `.text` section of an ELF. This module will help interact with the headers of ELF files and eventually other executable formats.
 use anyhow::{Context, Result, anyhow};
 use goblin::elf::Elf;
 
@@ -11,6 +12,6 @@ pub fn extract_text_section<'a>(buffer: &'a [u8], path: &str) -> Result<(u64, &'
         .ok_or_else(|| anyhow!(".text section not found"))?;
     let range = text_hdr
         .file_range()
-        .ok_or_else(|| anyhow!(".text has no file range (NOBITS?)"))?;
+        .ok_or_else(|| anyhow!(".text has no file range"))?;
     Ok((text_hdr.sh_addr, &buffer[range]))
 }
