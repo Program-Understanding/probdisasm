@@ -10,11 +10,11 @@ We found that the implementation did not fully explore or implement the algorith
 
 ### Installation
 #### Rust
-```
+```bash
 cargo add probdisasm
 ```
 #### Python
-```
+```bash
 uv add probdisasm 
 ```
 ### Usage
