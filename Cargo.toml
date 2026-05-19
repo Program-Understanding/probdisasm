@@ -8,7 +8,7 @@ keywords = ["binary", "elf", "disassembly", "static-analysis"]
 edition = "2024"
 include = ["src", "CHANGELOG.md", "Cargo.toml", "LICENSE", "README.md"]
 license = "MIT"
-repository = "https://codeberg.org/ihce/probdisasm"
+repository = "https://github.com/Ihce/probdisasm"
 readme = "README.md"
 rust-version = "1.85.0"
 
