@@ -231,4 +231,43 @@ mod tests {
         let insn = build_superset_extract_one(clear_bytes, 0x1000);
         assert_eq!(insn.branch_target, None);
     }
+
+    #[test]
+    fn test_superset_new_() {
+        let bytes: &[u8] = &[0x90];
+        let superset = Superset::new(0x1000, bytes).expect("failed to create superset");
+
+        assert_eq!(superset.base_addr, 0x1000);
+        assert_eq!(superset.bytes, bytes);
+        assert_eq!(superset.instructions.len(), bytes.len());
+    }
+
+    #[test]
+    fn test_superset_new_length() {
+        // Test that the number of instructions matches the number of bytes.
+        let bytes: &[u8] = &[0x90, 0x90, 0x90, 0xFF];
+        let superset = Superset::new(0x1000, bytes).expect("failed to create superset");
+
+        assert_eq!(superset.instructions.len(), bytes.len());
+    }
+
+    #[test]
+    fn test_superset_new_valid() {
+        let bytes: &[u8] = &[0x90, 0x90, 0x90];
+        let superset = Superset::new(0x1000, bytes).expect("failed to create superset");
+
+        for insn in &superset.instructions {
+            assert!(insn.is_some());
+        }
+    }
+
+    #[test]
+    fn test_superset_new_invalid() {
+        // check a couple of invalids decodes
+        let bytes: &[u8] = &[0x06, 0xFF];
+        let superset = Superset::new(0x1000, bytes).expect("failed to create superset");
+
+        assert!(superset.at(0x1000).is_none());
+        assert!(superset.at(0x1001).is_none());
+    }
 }
