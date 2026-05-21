@@ -1,3 +1,11 @@
+## [0.1.0] - 2026-05-21
+
+### 🐛 Bug Fixes
+
+- *(superset)* Fixed the successor function failing to handle calls correctly.
+
+### 🧪 Testing
+- *(superset)* Added missing unit tests 
 # Changelog
 
 All notable changes to this project will be documented in this file.
