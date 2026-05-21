@@ -270,4 +270,76 @@ mod tests {
         assert!(superset.at(0x1000).is_none());
         assert!(superset.at(0x1001).is_none());
     }
+
+    #[test]
+    fn test_superset_at() {
+        let bytes: &[u8] = &[0x90, 0xFF];
+        let superset = Superset::new(0x1000, bytes).expect("failed to create superset");
+
+        assert!(superset.at(0x1000).is_some());
+        assert!(superset.at(0x1001).is_none());
+    }
+
+    #[test]
+    fn test_superset_iter_valid() {
+        let bytes: &[u8] = &[0x90, 0x06, 0x90, 0x90, 0xFF];
+        let superset = Superset::new(0x1000, bytes).expect("failed to create superset");
+
+        let valid_iter = superset.iter_valid();
+        assert_eq!(valid_iter.count(), 3);
+    }
+
+    #[test]
+    fn test_superset_successors_of_invalid_addr() {
+        let bytes: &[u8] = &[0xFF];
+        let superset = Superset::new(0x1000, bytes).expect("failed to create superset");
+
+        assert_eq!(superset.successors_of(0x1000), Vec::new());
+    }
+
+    #[test]
+    fn test_superset_successors_of_return() {
+        let bytes: &[u8] = &[0xC3];
+        let superset = Superset::new(0x1000, bytes).expect("failed to create superset");
+
+        assert_eq!(superset.successors_of(0x1000), Vec::new());
+    }
+
+    #[test]
+    fn test_superset_successors_of_default() {
+        let bytes: &[u8] = &[0x90];
+        let superset = Superset::new(0x1000, bytes).expect("failed to create superset");
+
+        assert_eq!(superset.successors_of(0x1001), Vec::new());
+    }
+
+    #[test]
+    fn test_superset_successors_of_long_default() {
+        let bytes: &[u8] = &[0x89, 0xC0, 0x90];
+        let superset = Superset::new(0x1000, bytes).expect("failed to create superset");
+
+        assert_eq!(superset.successors_of(0x1003), Vec::new());
+    }
+
+    #[test]
+    fn test_superset_successors_of_branch() {
+        // 0:  e9 02 00 00 00          jmp    0x7
+        // 5:  90                      nop
+        // 6:  90                      nop
+        // 7:  89 c0                   mov    eax,eax
+        //
+        let bytes: &[u8] = &[0xE9, 0x02, 0x00, 0x00, 0x00, 0x90, 0x90, 0x89, 0xC0];
+        let superset = Superset::new(0x1000, bytes).expect("failed to create superset");
+
+        assert_eq!(superset.successors_of(0x1000), vec![0x1007]);
+    }
+
+    #[test]
+    fn test_superset_successors_of_indirect_branch() {
+        let bytes: &[u8] = &[0x0F, 0x84, 0x02, 0x00, 0x00, 0x00, 0x90, 0x90, 0x89, 0xC0];
+        let superset = Superset::new(0x1000, bytes).expect("failed to create superset");
+
+        assert!(superset.successors_of(0x1000).contains(&0x1006));
+        assert!(superset.successors_of(0x1000).contains(&0x1008));
+    }
 }
