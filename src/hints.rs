@@ -87,7 +87,6 @@ fn extract_control_flow_convergence(superset: &Superset, hints: &mut HashMap<Hin
     }
 }
 
-
 /// Returns the hint label for a branch instruction based on its displacement encoding width.
 fn displacement_label_for_convergence(insn: &Instruction) -> HintLabel {
     match insn.size {
@@ -213,5 +212,176 @@ fn walk_forward_for_use(
                 .into_iter()
                 .map(|s| (s, remaining - 1)),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_control_flow_convergence_long() {
+        // 0:  e9 07 00 00 00          jmp    0xc
+        // 5:  90                      nop
+        // 6:  e9 01 00 00 00          jmp    0xc
+        // b:  90                      nop
+        // c:  90                      nop
+
+        let bytes: &[u8] = &[
+            0xE9, 0x07, 0x00, 0x00, 0x00, 0x90, 0xE9, 0x01, 0x00, 0x00, 0x00, 0x90, 0x90,
+        ];
+        let superset = Superset::new(0x0, bytes).expect("failed to create superset");
+        let hints = extract_all_hints(&superset);
+
+        assert!(hints.contains_key(&HintKey {
+            source_addr: 0x0,
+            label: HintLabel::CtrlConvLong
+        }));
+        assert!(hints.contains_key(&HintKey {
+            source_addr: 0x6,
+            label: HintLabel::CtrlConvLong
+        }));
+    }
+
+    #[test]
+    fn test_extract_control_flow_convergence_rel() {
+        // 0x0: eb 04    jmp 0x6
+        // 0x2: 90       nop
+        // 0x3: eb 01    jmp 0x6
+        // 0x5: 90       nop
+        // 0x6: 90       nop
+
+        let bytes: &[u8] = &[0xEB, 0x04, 0x90, 0xEB, 0x01, 0x90, 0x90];
+        let superset = Superset::new(0x0, bytes).expect("failed to create superset");
+        let hints = extract_all_hints(&superset);
+
+        assert!(hints.contains_key(&HintKey {
+            source_addr: 0x0,
+            label: HintLabel::CtrlConvRel
+        }));
+        assert!(hints.contains_key(&HintKey {
+            source_addr: 0x3,
+            label: HintLabel::CtrlConvRel
+        }));
+    }
+
+    #[test]
+    // I dont like this test in the slightest. Honestly might be a hint that things arent right.
+    fn test_extract_control_flow_convergence_near() {
+        // 0x0: 66 74 05   data16 je 0x8
+        // 0x3: 90         nop
+        // 0x4: 66 74 01   data16 je 0x8
+        // 0x7: 90         nop
+        // 0x8: 90         nop
+
+        let bytes: &[u8] = &[0x66, 0x74, 0x05, 0x90, 0x66, 0x74, 0x01, 0x90, 0x90];
+        let superset = Superset::new(0x0, bytes).expect("failed to create superset");
+        let hints = extract_all_hints(&superset);
+
+        assert!(hints.contains_key(&HintKey {
+            source_addr: 0x0,
+            label: HintLabel::CtrlConvNear
+        }));
+        assert!(hints.contains_key(&HintKey {
+            source_addr: 0x4,
+            label: HintLabel::CtrlConvNear
+        }));
+    }
+
+    #[test]
+    fn test_extract_weak_control_flow() {
+        // 0x0: e9 01 00 00 00   jmp 0x6
+        // 0x5: 90               nop
+        // 0x6: 90               nop
+
+        let bytes: &[u8] = &[0xE9, 0x01, 0x00, 0x00, 0x00, 0x90, 0x90];
+        let superset = Superset::new(0x0, bytes).expect("failed to create superset");
+        let hints = extract_all_hints(&superset);
+
+        assert!(hints.contains_key(&HintKey {
+            source_addr: 0x0,
+            label: HintLabel::CtrlWeak
+        }));
+    }
+
+    #[test]
+    fn test_extract_control_flow_crossing_long() {
+        // 0x0: e9 05 00 00 00   jmp 0xa  <- targets end of next branch
+        // 0x5: e9 00 00 00 00   jmp 0xa  <- ends at 0xa
+        // 0xa: 90               nop
+
+        let bytes: &[u8] = &[
+            0xE9, 0x05, 0x00, 0x00, 0x00, 0xE9, 0x00, 0x00, 0x00, 0x00, 0x90,
+        ];
+        let superset = Superset::new(0x0, bytes).expect("failed to create superset");
+        let hints = extract_all_hints(&superset);
+
+        assert!(hints.contains_key(&HintKey {
+            source_addr: 0x0,
+            label: HintLabel::CtrlCrossLong
+        }));
+        assert!(hints.contains_key(&HintKey {
+            source_addr: 0x5,
+            label: HintLabel::CtrlCrossLong
+        }));
+    }
+
+    #[test]
+    fn test_extract_control_flow_crossing_rel() {
+        // 0x0: eb 02   jmp 0x4  <- targets end of next branch
+        // 0x2: eb 00   jmp 0x4  <- ends at 0x4
+        // 0x4: 90      nop
+
+        let bytes: &[u8] = &[0xEB, 0x02, 0xEB, 0x00, 0x90];
+        let superset = Superset::new(0x0, bytes).expect("failed to create superset");
+        let hints = extract_all_hints(&superset);
+
+        assert!(hints.contains_key(&HintKey {
+            source_addr: 0x0,
+            label: HintLabel::CtrlCrossRel
+        }));
+        assert!(hints.contains_key(&HintKey {
+            source_addr: 0x2,
+            label: HintLabel::CtrlCrossRel
+        }));
+    }
+
+    #[test]
+    fn test_extract_control_flow_crossing_near() {
+        // 0x0: 66 74 00   data16 je 0x3  <- target lands at start of next branch
+        // 0x3: 66 74 00   data16 je 0x6
+        // 0x6: 90         nop
+
+        let bytes: &[u8] = &[0x66, 0x74, 0x00, 0x66, 0x74, 0x00, 0x90];
+        let superset = Superset::new(0x0, bytes).expect("failed to create superset");
+        let hints = extract_all_hints(&superset);
+
+        assert!(hints.contains_key(&HintKey {
+            source_addr: 0x0,
+            label: HintLabel::CtrlCrossNear
+        }));
+        assert!(hints.contains_key(&HintKey {
+            source_addr: 0x3,
+            label: HintLabel::CtrlCrossNear
+        }));
+    }
+
+    #[test]
+    fn test_extract_register_def_use() {
+        // 0x0: b8 01 00 00 00   mov eax, 0x1  <- writes eax
+        // 0x5: 03 d8            add ebx, eax  <- reads eax
+
+        let bytes: &[u8] = &[0xB8, 0x01, 0x00, 0x00, 0x00, 0x03, 0xD8];
+        let superset = Superset::new(0x0, bytes).expect("failed to create superset");
+        let hints = extract_all_hints(&superset);
+
+        assert!(hints.contains_key(&HintKey {
+            source_addr: 0x0,
+            label: HintLabel::RegDefUse
+        }));
+        assert!(hints.contains_key(&HintKey {
+            source_addr: 0x5,
+            label: HintLabel::RegDefUse
+        }));
     }
 }
