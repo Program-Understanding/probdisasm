@@ -186,8 +186,7 @@ mod tests {
 
     #[test]
     fn test_extract_branch_target_direct_jump() {
-        // `jmp 5` -> x64 jump relative to the next instruction
-        //  At address 0x1000: 0x1000 +5 (insn size) + 0 (rel32) = 0x1005
+        // `jmp 0x05` -> x64 jump relative to the next instruction
         let jmp_bytes: &[u8] = &[0xE9, 0x00, 0x00, 0x00, 0x00];
         let insn = build_superset_extract_one(jmp_bytes, 0x1000);
         assert_eq!(insn.branch_target, Some(0x1005));
@@ -196,9 +195,40 @@ mod tests {
     #[test]
     fn test_extract_branch_target_direct_call() {
         // `call 0x20` -> x64 call relative to the next instruction
-        //  At address 0x1000: 0x1000 +5 (insn size) + 0 (rel32) = 0x1005
         let call_bytes: &[u8] = &[0xE8, 0x0A, 0x00, 0x00, 0x00];
         let insn = build_superset_extract_one(call_bytes, 0x1000);
         assert_eq!(insn.branch_target, Some(0x100F));
+    }
+
+    #[test]
+    fn test_extract_branch_target_conditional_jump() {
+        // `je 0x06` -> x64 jump conditional relative to the next instruction
+        let je_bytes: &[u8] = &[0x0F, 0x84, 0x00, 0x00, 0x00, 0x00];
+        let insn = build_superset_extract_one(je_bytes, 0x1000);
+        assert_eq!(insn.branch_target, Some(0x1006));
+    }
+
+    #[test]
+    fn test_extract_branch_target_indirect_jump() {
+        // `jmp rax` -> x64 indirect call. Should return None because the target is not known statically (yet)
+        let jump_bytes: &[u8] = &[0xFF, 0xE0];
+        let insn = build_superset_extract_one(jump_bytes, 0x1000);
+        assert_eq!(insn.branch_target, None);
+    }
+
+    #[test]
+    fn test_extract_branch_target_indirect_call() {
+        // `call rax` -> x64 indirect call. Should return None because the target is not known statically (yet)
+        let call_bytes: &[u8] = &[0xFF, 0xD0];
+        let insn = build_superset_extract_one(call_bytes, 0x1000);
+        assert_eq!(insn.branch_target, None);
+    }
+
+    #[test]
+    fn test_extract_branch_target_not_branch() {
+        // `nop` -> x64 no-op. Should return None because it is not a branch instruction
+        let clear_bytes: &[u8] = &[0x89, 0xC0];
+        let insn = build_superset_extract_one(clear_bytes, 0x1000);
+        assert_eq!(insn.branch_target, None);
     }
 }
