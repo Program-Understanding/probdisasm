@@ -26,7 +26,6 @@ pub struct Instruction {
     pub branch_target: Option<u64>,
 }
 
-
 impl Instruction {
     /// Returns `true` if the instruction is a jump (jmp) instruction.
     pub fn is_jump(&self) -> bool {
@@ -170,4 +169,36 @@ fn extract_branch_target(detail: &InsnDetail, groups: &[u8]) -> Option<u64> {
             X86OperandType::Imm(v) => Some(v as u64),
             _ => None,
         })
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    fn build_superset_extract_one(bytes: &[u8], addr: u64) -> Instruction {
+        let superset = Superset::new(addr, bytes).expect("Failed to build superset");
+        superset
+            .at(addr)
+            .expect("Failed to extract instruction at address")
+            .clone()
+    }
+
+    #[test]
+    fn test_extract_branch_target_direct_jump() {
+        // `jmp 5` -> x64 jump relative to the next instruction
+        //  At address 0x1000: 0x1000 +5 (insn size) + 0 (rel32) = 0x1005
+        let jmp_bytes: &[u8] = &[0xE9, 0x00, 0x00, 0x00, 0x00];
+        let insn = build_superset_extract_one(jmp_bytes, 0x1000);
+        assert_eq!(insn.branch_target, Some(0x1005));
+    }
+
+    #[test]
+    fn test_extract_branch_target_direct_call() {
+        // `call 0x20` -> x64 call relative to the next instruction
+        //  At address 0x1000: 0x1000 +5 (insn size) + 0 (rel32) = 0x1005
+        let call_bytes: &[u8] = &[0xE8, 0x0A, 0x00, 0x00, 0x00];
+        let insn = build_superset_extract_one(call_bytes, 0x1000);
+        assert_eq!(insn.branch_target, Some(0x100F));
+    }
 }
