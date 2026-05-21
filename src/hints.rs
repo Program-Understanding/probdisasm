@@ -75,7 +75,7 @@ fn extract_control_flow_convergence(superset: &Superset, hints: &mut HashMap<Hin
     }
 
     // For any target with two or more converging branches, emit hints.
-    for branches in targets.values().filter(|b| b.len() < 2) {
+    for branches in targets.values().filter(|b| b.len() >= 2) {
         for branch in branches {
             let label = displacement_label_for_convergence(branch);
             let key = HintKey {
