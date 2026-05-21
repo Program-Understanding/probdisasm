@@ -112,16 +112,17 @@ impl Superset {
 
         let fall_through = addr + insn.size as u64;
 
-        if !insn.is_jump() {
+        if !insn.is_branch() {
             return vec![fall_through];
         }
         let mut out = Vec::new();
         if let Some(target) = insn.branch_target {
             out.push(target);
         }
-        if insn.mnemonic != "jmp" {
+        if !insn.is_jump() || insn.mnemonic != "jmp" {
             out.push(fall_through);
         }
+
         out
     }
 }
@@ -335,11 +336,26 @@ mod tests {
     }
 
     #[test]
-    fn test_superset_successors_of_indirect_branch() {
+    fn test_superset_successors_of_jump() {
         let bytes: &[u8] = &[0x0F, 0x84, 0x02, 0x00, 0x00, 0x00, 0x90, 0x90, 0x89, 0xC0];
         let superset = Superset::new(0x1000, bytes).expect("failed to create superset");
 
         assert!(superset.successors_of(0x1000).contains(&0x1006));
         assert!(superset.successors_of(0x1000).contains(&0x1008));
+    }
+
+    #[test]
+    fn test_superset_successors_of_call() {
+        let bytes: &[u8] = &[0xE8, 0x0A, 0x00, 0x00, 0x00, 0x90, 0x90, 0x89, 0xC0];
+        let superset = Superset::new(0x1000, bytes).expect("failed to create superset");
+
+        assert!(
+            superset.successors_of(0x1000).contains(&0x1005),
+            "call should have fall-through successor"
+        );
+        assert!(
+            superset.successors_of(0x1000).contains(&0x100F),
+            "call should have return successor"
+        );
     }
 }
