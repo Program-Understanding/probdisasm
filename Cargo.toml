@@ -23,7 +23,7 @@ python = ["dep:pyo3"]
 anyhow = "1.0.102"
 capstone = "0.14.0"
 goblin = "0.10.5"
-pyo3 = { version = "0.28.3", features = ["extension-module"], optional = true }
+pyo3 = { version = "0.28.3", features = ["extension-module", "abi3-py39"], optional = true }
 
 [package.metadata.docs.rs]
 all-features = false
