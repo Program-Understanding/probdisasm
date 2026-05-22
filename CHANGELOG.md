@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-05-22
+
 ### Added
 - PE/PE32+ binary support in `header.rs`.
 

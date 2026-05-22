@@ -1,6 +1,6 @@
 [package]
 name = "probdisasm"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["Dylan Stancil <dylan.stancil@outlook.com>"]
 categories = ["parsing", "command-line-utilities"]
 description = "An implementation of probabilistic disassembly for ELF binaries."
