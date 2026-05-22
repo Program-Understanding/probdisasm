@@ -9,7 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 - PE/PE32+ binary support in `header.rs`.
-- Unit tests for `propagate_invalidity_backward`.
 
 ### Changed
 - **Breaking:** `extract_text_section` signature dropped the `path` argument.
