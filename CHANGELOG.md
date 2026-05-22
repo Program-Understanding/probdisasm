@@ -1,11 +1,3 @@
-## [0.1.0] - 2026-05-21
-
-### 🐛 Bug Fixes
-
-- *(superset)* Fixed the successor function failing to handle calls correctly.
-
-### 🧪 Testing
-- *(superset)* Added missing unit tests 
 # Changelog
 
 All notable changes to this project will be documented in this file.
@@ -14,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+### Added
+- PE/PE32+ binary support in `header.rs`.
+- Unit tests for `propagate_invalidity_backward`.
+
+### Changed
+- **Breaking:** `extract_text_section` signature dropped the `path` argument.
+
+## [0.1.1] - 2026-05-21
+
+### Fixed
+- *(superset)* `successors_of` now handles `call` correctly.
+
+### Tests
+- *(superset)* Added missing unit tests.
 
 ## [0.1.0] - 2026-05-18
 
