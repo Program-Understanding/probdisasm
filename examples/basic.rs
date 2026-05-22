@@ -3,8 +3,8 @@ use std::fs;
 use probdisasm::{Analysis, Superset, extract_all_hints, extract_text_section};
 
 fn main() -> anyhow::Result<()> {
-    let bytes = fs::read("tests/bin/gcc_coreutils_64_O0_make-prime-list.stripped")?;
-    let (base, code) = extract_text_section(&bytes, "<input>")?;
+    let bytes = fs::read("tests/bins/elf_test")?;
+    let (base, code) = extract_text_section(&bytes)?;
     let superset = Superset::new(base, code)?;
     let mut analysis = Analysis::new(&superset);
     analysis.run(&extract_all_hints(&superset));
