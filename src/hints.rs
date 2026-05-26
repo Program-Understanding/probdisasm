@@ -38,14 +38,17 @@ pub enum HintLabel {
 }
 
 impl HintLabel {
-    /// Returns the prior probability of this hint type.
+    /// Returns the prior probability of this hint type
+    ///
+    /// Calibrated against Priyadarshan et al., "Accurate Disassembly of Complex Binaries
+    /// Without Use of Compiler Metadata" (ASPLOS '23), Tables 2 and 3.
     pub const fn prior(self) -> f64 {
         match self {
-            Self::CtrlConvRel | Self::CtrlCrossRel => 1.0 / u8::MAX as f64,
-            Self::CtrlConvNear | Self::CtrlCrossNear => 1.0 / u16::MAX as f64,
-            Self::CtrlConvLong | Self::CtrlCrossLong => 1.0 / u32::MAX as f64,
+            Self::CtrlConvRel | Self::CtrlCrossRel => 1.0 / 32.0,
+            Self::CtrlConvNear | Self::CtrlCrossNear => 1.0 / 2048.0,
+            Self::CtrlConvLong | Self::CtrlCrossLong => 1.0 / 32768.0,
             Self::CtrlWeak => 1.0 / 3.5,
-            Self::RegDefUse => 1.0 / 16.0,
+            Self::RegDefUse => 0.5,
         }
     }
 }
