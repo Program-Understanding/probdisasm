@@ -23,6 +23,7 @@ pub struct Analysis<'a> {
     superset: &'a Superset,
     data_byte: Vec<DataProb>,
     reaching_hints: HashMap<u64, HashSet<HintKey>>,
+    log_d: HashMap<u64, f64>,
     posterior: HashMap<u64, f64>,
 }
 
@@ -43,6 +44,7 @@ impl<'a> Analysis<'a> {
             superset,
             data_byte,
             reaching_hints: HashMap::new(),
+            log_d: HashMap::new(),
             posterior: HashMap::new(),
         }
     }
@@ -51,8 +53,11 @@ impl<'a> Analysis<'a> {
     pub fn run(&mut self, hint_priors: &HashMap<HintKey, f64>) {
         const MAX_ITER: usize = 100;
         let predecessors = self.build_predecessor_map();
+        let log_priors: HashMap<HintKey, f64> =
+            hint_priors.iter().map(|(&k, &p)| (k, p.ln())).collect();
+        let hints_by_source = group_hints_by_source(hint_priors);
         for _ in 0..MAX_ITER {
-            let forward = self.propagate_hints_forward(hint_priors);
+            let forward = self.propagate_hints_forward(&hints_by_source, &log_priors);
             let occlusion = self.propagate_to_occlusion_space();
             let backward = self.propagate_invalidity_backward(&predecessors);
             if !forward && !occlusion && !backward {
@@ -75,8 +80,9 @@ impl<'a> Analysis<'a> {
     }
 
     /// Propagates hints forward along control flow, merging them into reaching hints and recomputing data probabilities.
-    fn propagate_hints_forward(&mut self, hint_priors: &HashMap<HintKey, f64>) -> bool {
-        let hints_by_source = group_hints_by_source(hint_priors);
+    fn propagate_hints_forward( &mut self,
+         hints_by_source: &HashMap<u64, Vec<HintKey>>,
+         log_priors: &HashMap<HintKey, f64>) -> bool {
 
         let mut changed = false;
         for offset in 0..self.superset.instructions.len() {
@@ -89,7 +95,7 @@ impl<'a> Analysis<'a> {
                     addr,
                     offset,
                     hints_fired_here.iter().copied(),
-                    hint_priors,
+                    log_priors,
                 )
             {
                 changed = true;
@@ -111,7 +117,7 @@ impl<'a> Analysis<'a> {
                     succ_addr,
                     succ_offset,
                     reaching_here.iter().copied(),
-                    hint_priors,
+                    log_priors,
                 ) {
                     changed = true;
                 }
@@ -299,32 +305,29 @@ impl<'a> Analysis<'a> {
         out
     }
 
-    /// Merges reaching hints for the given address.
     fn merge_reaching_hints(
         &mut self,
         addr: u64,
         offset: usize,
         new_hints: impl IntoIterator<Item = HintKey>,
-        hint_priors: &HashMap<HintKey, f64>,
+        log_priors: &HashMap<HintKey, f64>,
     ) -> bool {
         let reaching = self.reaching_hints.entry(addr).or_default();
-        let before = reaching.len();
-        reaching.extend(new_hints);
-        if reaching.len() == before {
-            return false;
+        let log_d = self.log_d.entry(addr).or_insert(0.0);
+        let mut changed = false;
+        for h in new_hints {
+            if reaching.insert(h) {
+                if let Some(&lp) = log_priors.get(&h) {
+                    *log_d += lp;
+                }
+                changed = true;
+            }
         }
-        let log_d = log_product(reaching, hint_priors);
-        self.data_byte[offset] = DataProb::Estimated(log_d);
-        true
+        if changed {
+            self.data_byte[offset] = DataProb::Estimated(*log_d);
+        }
+        changed
     }
-}
-
-/// Computes the log product of the reaching hints and their priors.
-fn log_product(rh: &HashSet<HintKey>, hint_priors: &HashMap<HintKey, f64>) -> f64 {
-    rh.iter()
-        .filter_map(|h| hint_priors.get(h))
-        .map(|p| p.ln())
-        .sum()
 }
 
 /// Groups hints by their source address.
